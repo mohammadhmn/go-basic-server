@@ -28,20 +28,33 @@ func main() {
 	}
 
 	buffer := make([]byte, 1024)
+	response := ""
 	_, err = conn.Read(buffer)
 	if err != nil {
 		fmt.Println("Error in reading connection: ", err.Error())
 		os.Exit(1)
 	}
-	stringBuffer := string(buffer)
-	if strings.HasPrefix(stringBuffer, "GET / HTTP/1.1") {
-		conn.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
-	} else if strings.HasPrefix(stringBuffer, "GET /echo/") {
-		statusLine := strings.Split(stringBuffer, "\r\n")[0]
-		endpoint := strings.Split(statusLine, " ")[1]
+
+	requestParts := strings.Split(string(buffer), "\r\n")
+	endpoint := strings.Split(requestParts[0], " ")[1]
+
+	if endpoint == "/" {
+		response = "HTTP/1.1 200 OK\r\n\r\n"
+	} else if strings.HasPrefix(endpoint, "/echo/") {
 		echo := strings.Split(endpoint, "/")[2]
-		conn.Write([]byte(fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(echo), echo)))
+		response = fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(echo), echo)
+	} else if strings.HasPrefix(endpoint, "/user-agent") {
+		userAgentHeader := ""
+		for _, header := range requestParts {
+			if strings.HasPrefix(strings.ToLower(header), "user-agent") {
+				userAgentHeader = header
+			}
+		}
+		userAgent := strings.Split(userAgentHeader, " ")[1]
+		response = fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(userAgent), userAgent)
 	} else {
-		conn.Write([]byte("HTTP/1.1 404 Not Found\r\n\r\n"))
+		response = "HTTP/1.1 404 Not Found\r\n\r\n"
 	}
+
+	conn.Write([]byte(response))
 }
