@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
 	"net"
 	"os"
@@ -8,14 +9,20 @@ import (
 	"strings"
 )
 
-type RequestHandler func(requestParts []string) string
+type RequestHandler func(request Request) string
 
 const PORT = "4221"
 
 const (
 	OK          = "HTTP/1.1 200 OK"
+	CREATED     = "HTTP/1.1 201 Created"
 	BAD_REQUEST = "HTTP/1.1 400 Bad Request"
 	NOT_FOUND   = "HTTP/1.1 404 Not Found"
+)
+
+const (
+	PlainText   = "text/plain"
+	OctetStream = "application/octet-stream"
 )
 
 func main() {
@@ -47,24 +54,62 @@ func handleConnection(conn net.Conn) {
 		return
 	}
 
-	response := processRequest(string(requestBuffer))
+	request := parseRequest(string(requestBuffer))
+	response := processRequest(request)
 	conn.Write([]byte(response))
 }
 
-func processRequest(request string) string {
-	requestParts := strings.Split(request, "\r\n")
-	if len(requestParts) == 0 {
-		return badRequestResponse()
+type Request struct {
+	Method   string
+	Endpoint string
+	Headers  map[string]string
+	Body     string
+}
+
+func parseRequest(requestString string) Request {
+	scanner := bufio.NewScanner(strings.NewReader(requestString))
+	scanner.Scan()
+	requestLine := scanner.Text()
+	requestParts := strings.Split(requestLine, " ")
+
+	method := requestParts[0]
+	endpoint := requestParts[1]
+
+	headers := make(map[string]string)
+	var body string
+	isBody := false
+
+	for scanner.Scan() {
+		line := scanner.Text()
+		if line == "" {
+			isBody = true
+			continue
+		}
+		if isBody {
+			body += strings.ReplaceAll(line, "\x00", "")
+		} else {
+			headerParts := strings.SplitN(line, ": ", 2)
+			if len(headerParts) == 2 {
+				headers[strings.ToLower(headerParts[0])] = headerParts[1]
+			}
+		}
 	}
 
-	endpoint := strings.Split(requestParts[0], " ")[1]
+	return Request{
+		Method:   method,
+		Endpoint: endpoint,
+		Headers:  headers,
+		Body:     body,
+	}
+}
 
-	handler := getHandler(endpoint)
+func processRequest(request Request) string {
+	handler := getHandler(request.Endpoint)
 	if handler == nil {
 		return notFoundResponse()
 	}
 
-	return handler(requestParts)
+	return handler(request)
 }
 
 func getHandler(endpoint string) RequestHandler {
@@ -82,44 +127,73 @@ func getHandler(endpoint string) RequestHandler {
 	}
 }
 
-func HandleRoot(requestParts []string) string {
+func HandleRoot(request Request) string {
 	return okResponse()
 }
 
-func HandleEcho(requestParts []string) string {
-	endpoint := strings.Split(requestParts[0], " ")[1]
-	echo := strings.TrimPrefix(endpoint, "/echo/")
-	return responseBuilder(OK, "text/plain", len(echo), echo)
+func HandleEcho(request Request) string {
+	echo := strings.TrimPrefix(request.Endpoint, "/echo/")
+	return responseBuilder(OK, PlainText, len(echo), echo)
 }
 
-func HandleUserAgent(requestParts []string) string {
-	for _, header := range requestParts {
-		if strings.HasPrefix(strings.ToLower(header), "user-agent") {
-			userAgent := strings.Join(strings.Split(header, " ")[1:], " ")
-			return responseBuilder(OK, "text/plain", len(userAgent), userAgent)
-		}
+func HandleUserAgent(request Request) string {
+	userAgent, ok := request.Headers["user-agent"]
+	if !ok {
+		return badRequestResponse()
 	}
-	return badRequestResponse()
+	return responseBuilder(OK, PlainText, len(userAgent), userAgent)
 }
 
-func HandleFile(requestParts []string) string {
-	directory := os.Args[2]
-	if directory == "" {
-		fmt.Println("Error reading file directory")
+func HandleFile(request Request) string {
+	dir, err := readDir()
+	if err != nil {
+		fmt.Println(err.Error())
 		return badRequestResponse()
 	}
 
-	endpoint := strings.Split(requestParts[0], " ")[1]
-	file := strings.TrimPrefix(endpoint, "/files/")
-	fileData, err := os.ReadFile(filepath.Join(directory, file))
-	if err != nil {
-		return notFoundResponse()
+	filename := strings.TrimPrefix(request.Endpoint, "/files/")
+
+	if request.Method == "GET" {
+		fileData, err := os.ReadFile(filepath.Join(dir, filename))
+		if err != nil {
+			return notFoundResponse()
+		}
+		return responseBuilder(OK, OctetStream, len(fileData), string(fileData))
+	} else if request.Method == "POST" {
+		file, err := os.Create(filepath.Join(dir, filename))
+		if err != nil {
+			return notFoundResponse()
+		}
+		_, err = file.WriteString(request.Body)
+		if err != nil {
+			return notFoundResponse()
+		}
+		err = file.Close()
+		if err != nil {
+			return notFoundResponse()
+		}
+		return responseBuilder(CREATED, OctetStream, 0, filename)
 	}
-	return responseBuilder(OK, "application/octet-stream", len(fileData), string(fileData))
+
+	return notFoundResponse()
 }
 
 func responseBuilder(statusLine string, contentType string, contentLength int, body string) string {
-	return fmt.Sprintf("%s\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n%s", statusLine, contentType, contentLength, body)
+	response := ""
+	if statusLine != "" {
+		response += statusLine + "\r\n"
+	}
+	if contentType != "" {
+		response += "Content-Type: " + contentType + "\r\n"
+	}
+	if contentLength != 0 {
+		response += "Content-Length: " + fmt.Sprint(contentLength) + "\r\n"
+	}
+	response += "\r\n"
+	if body != "" {
+		response += body
+	}
+	return response
 }
 
 func okResponse() string {
@@ -132,4 +206,13 @@ func badRequestResponse() string {
 
 func notFoundResponse() string {
 	return NOT_FOUND + "\r\n\r\n"
+}
+
+func readDir() (string, error) {
+	directory := os.Args[2]
+	if directory == "" {
+		fmt.Println("Error reading file directory")
+		return "", fmt.Errorf("invalid directory")
+	}
+	return directory, nil
 }
