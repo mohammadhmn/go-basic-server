@@ -2,33 +2,37 @@ package main
 
 import (
 	"fmt"
-	"strings"
-
-	// Uncomment this block to pass the first stage
 	"net"
 	"os"
+	"path/filepath"
+	"strings"
+)
+
+type RequestHandler func(requestParts []string) string
+
+const PORT = "4221"
+
+const (
+	OK          = "HTTP/1.1 200 OK"
+	BAD_REQUEST = "HTTP/1.1 400 Bad Request"
+	NOT_FOUND   = "HTTP/1.1 404 Not Found"
 )
 
 func main() {
-	// You can use print statements as follows for debugging, they'll be visible when running tests.
-	fmt.Println("Logs from your program will appear here!")
-
-	// Uncomment this block to pass the first stage
-
-	l, err := net.Listen("tcp", "0.0.0.0:4221")
+	listener, err := net.Listen("tcp", "0.0.0.0:"+PORT)
 	if err != nil {
-		fmt.Println("Failed to bind to port 4221")
+		fmt.Printf("Failed to bind to port %s: %v\n", PORT, err)
 		os.Exit(1)
 	}
+	defer listener.Close()
+	fmt.Printf("Listening on port %s\n", PORT)
 
 	for {
-
-		conn, err := l.Accept()
+		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("Error accepting connection: ", err.Error())
-			os.Exit(1)
+			fmt.Printf("Error accepting connection: %v\n", err)
+			continue
 		}
-
 		go handleConnection(conn)
 	}
 }
@@ -36,33 +40,96 @@ func main() {
 func handleConnection(conn net.Conn) {
 	defer conn.Close()
 	requestBuffer := make([]byte, 1024)
-	response := ""
+
 	_, err := conn.Read(requestBuffer)
 	if err != nil {
-		fmt.Println("Error in reading connection: ", err.Error())
-		os.Exit(1)
+		fmt.Printf("Error reading connection: %v\n", err)
+		return
 	}
 
-	requestParts := strings.Split(string(requestBuffer), "\r\n")
+	response := processRequest(string(requestBuffer))
+	conn.Write([]byte(response))
+}
+
+func processRequest(request string) string {
+	requestParts := strings.Split(request, "\r\n")
+	if len(requestParts) == 0 {
+		return badRequestResponse()
+	}
+
 	endpoint := strings.Split(requestParts[0], " ")[1]
 
-	if endpoint == "/" {
-		response = "HTTP/1.1 200 OK\r\n\r\n"
-	} else if strings.HasPrefix(endpoint, "/echo/") {
-		echo := strings.Split(endpoint, "/")[2]
-		response = fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(echo), echo)
-	} else if strings.HasPrefix(endpoint, "/user-agent") {
-		userAgentHeader := ""
-		for _, header := range requestParts {
-			if strings.HasPrefix(strings.ToLower(header), "user-agent") {
-				userAgentHeader = header
-			}
-		}
-		userAgent := strings.Split(userAgentHeader, " ")[1]
-		response = fmt.Sprintf("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: %d\r\n\r\n%s", len(userAgent), userAgent)
-	} else {
-		response = "HTTP/1.1 404 Not Found\r\n\r\n"
+	handler := getHandler(endpoint)
+	if handler == nil {
+		return notFoundResponse()
 	}
 
-	conn.Write([]byte(response))
+	return handler(requestParts)
+}
+
+func getHandler(endpoint string) RequestHandler {
+	switch {
+	case endpoint == "/":
+		return HandleRoot
+	case strings.HasPrefix(endpoint, "/echo/"):
+		return HandleEcho
+	case strings.HasPrefix(endpoint, "/user-agent"):
+		return HandleUserAgent
+	case strings.HasPrefix(endpoint, "/files"):
+		return HandleFile
+	default:
+		return nil
+	}
+}
+
+func HandleRoot(requestParts []string) string {
+	return okResponse()
+}
+
+func HandleEcho(requestParts []string) string {
+	endpoint := strings.Split(requestParts[0], " ")[1]
+	echo := strings.TrimPrefix(endpoint, "/echo/")
+	return responseBuilder(OK, "text/plain", len(echo), echo)
+}
+
+func HandleUserAgent(requestParts []string) string {
+	for _, header := range requestParts {
+		if strings.HasPrefix(strings.ToLower(header), "user-agent") {
+			userAgent := strings.Join(strings.Split(header, " ")[1:], " ")
+			return responseBuilder(OK, "text/plain", len(userAgent), userAgent)
+		}
+	}
+	return badRequestResponse()
+}
+
+func HandleFile(requestParts []string) string {
+	directory := os.Args[2]
+	if directory == "" {
+		fmt.Println("Error reading file directory")
+		return badRequestResponse()
+	}
+
+	endpoint := strings.Split(requestParts[0], " ")[1]
+	file := strings.TrimPrefix(endpoint, "/files/")
+	fileData, err := os.ReadFile(filepath.Join(directory, file))
+	if err != nil {
+		return notFoundResponse()
+	}
+	return responseBuilder(OK, "application/octet-stream", len(fileData), string(fileData))
+}
+
+func responseBuilder(statusLine string, contentType string, contentLength int, body string) string {
+	return fmt.Sprintf("%s\r\nContent-Type: %s\r\nContent-Length: %d\r\n\r\n%s", statusLine, contentType, contentLength, body)
+}
+
+func okResponse() string {
+	return OK + "\r\n\r\n"
+}
+
+func badRequestResponse() string {
+	return BAD_REQUEST + "\r\n\r\n"
+}
+
+func notFoundResponse() string {
+	return NOT_FOUND + "\r\n\r\n"
 }
