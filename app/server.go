@@ -21,21 +21,29 @@ func main() {
 		os.Exit(1)
 	}
 
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
-	}
+	for {
 
-	buffer := make([]byte, 1024)
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			os.Exit(1)
+		}
+
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn net.Conn) {
+	defer conn.Close()
+	requestBuffer := make([]byte, 1024)
 	response := ""
-	_, err = conn.Read(buffer)
+	_, err := conn.Read(requestBuffer)
 	if err != nil {
 		fmt.Println("Error in reading connection: ", err.Error())
 		os.Exit(1)
 	}
 
-	requestParts := strings.Split(string(buffer), "\r\n")
+	requestParts := strings.Split(string(requestBuffer), "\r\n")
 	endpoint := strings.Split(requestParts[0], " ")[1]
 
 	if endpoint == "/" {
