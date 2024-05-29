@@ -34,9 +34,9 @@ func HandleEcho(req Request) string {
 		"Content-Type":   PlainText,
 		"Content-Length": fmt.Sprint(len(echo)),
 	}
-	encoding, ok := req.Headers["accept-encoding"]
-	if ok && encoding == "gzip" {
-		headers["Content-Encoding"] = encoding
+	encodings, ok := req.Headers["accept-encoding"]
+	if ok && strings.Contains(encodings, "gzip") {
+		headers["Content-Encoding"] = "gzip"
 	}
 	return ResponseBuilder(OK, headers, echo)
 }
