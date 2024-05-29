@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -34,11 +36,18 @@ func HandleEcho(req Request) string {
 		"Content-Type":   PlainText,
 		"Content-Length": fmt.Sprint(len(echo)),
 	}
+	responseBody := echo
 	encodings, ok := req.Headers["accept-encoding"]
 	if ok && strings.Contains(encodings, "gzip") {
 		headers["Content-Encoding"] = "gzip"
+		var buf bytes.Buffer
+		zw := gzip.NewWriter(&buf)
+		zw.Write([]byte(echo))
+		zw.Close()
+		responseBody = buf.String()
+		headers["Content-Length"] = fmt.Sprint(len(responseBody))
 	}
-	return ResponseBuilder(OK, headers, echo)
+	return ResponseBuilder(OK, headers, responseBody)
 }
 
 func HandleUserAgent(req Request) string {
